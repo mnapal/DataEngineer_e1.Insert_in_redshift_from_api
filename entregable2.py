@@ -5,6 +5,8 @@ from psycopg2 import sql
 import requests
 import os
 from dotenv import load_dotenv
+from datetime import datetime
+
 
 load_dotenv()
 
@@ -16,7 +18,7 @@ username = os.getenv('AWS_REDSHIFT_USER')
 password = os.getenv('AWS_REDSHIFT_PASSWORD')
 
 # Nombre de la tabla
-table_name = 'entregable1'
+table_name = 'entregable2'
 schema_name = os.getenv('AWS_REDSHIFT_SCHEMA')
 
 
@@ -44,35 +46,19 @@ def crear_tabla():
     )
     cur = conn.cursor()
 
+    #cur.execute(f"drop TABLE {schema_name}.{table_name} ;")
+    #conn.commit()
+
     cur.execute(
-        f"CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} (id INT, project_name VARCHAR(255), url VARCHAR(500), created TIMESTAMP, updated TIMESTAMP) sortkey(project_name);")
+        f"CREATE TABLE IF NOT EXISTS {schema_name}.{table_name} (id INT NOT NULL, project_name VARCHAR(255), url VARCHAR(500), created TIMESTAMP, updated TIMESTAMP, dias_update VARCHAR(30), CONSTRAINT PK__id2 primary key (id))  sortkey(project_name);")
 
     conn.commit()
     cur.close()
     conn.close()
 
-
-def insertar_valores(datos):
-    conn = psycopg2.connect(
-        host=hostname,
-        port=port,
-        dbname=database,
-        user=username,
-        password=password
-    )
-    cur = conn.cursor()
-
-    cur.execute(
-        f"INSERT INTO {schema_name}.{table_name} (id, project_name, url, created, updated) VALUES (%s, %s, %s, %s, %s)",
-        (datos['id'], datos['name'], datos['html_url'], datos['created_at'], datos['updated_at']))
-
-    conn.commit()
-    cur.close()
-    conn.close()
 
 
 def consultar_datos():
-    print("\nConsultando datos de la tabla...")
     conn = psycopg2.connect(
         host=hostname,
         port=port,
@@ -91,12 +77,28 @@ def consultar_datos():
     cur.close()
     conn.close()
 
+def existe_dato(ids):
+    conn = psycopg2.connect(
+        host=hostname,
+        port=port,
+        dbname=database,
+        user=username,
+        password=password
+    )
+    cur = conn.cursor()
+
+    cur.execute(f"SELECT count(1) FROM {schema_name}.{table_name} WHERE id={ids}")
+    existe = cur.fetchone()[0]
+
+    return existe
+    cur.close()
+    conn.close()
+
 
 def main():
     crear_tabla()
     datos_api = obtener_datos("CoderContenidos")
     df = pd.DataFrame(datos_api)
-    df = df.drop_duplicates()
 
     conn = psycopg2.connect(
         host=hostname,
@@ -105,24 +107,34 @@ def main():
         user=username,
         password=password
     )
+
+    print(df.dtypes)
+
+    df['created_at'] = pd.to_datetime(df['created_at'])
+    df['updated_at'] = pd.to_datetime(df['updated_at'])
+    df['dias_update'] = df ['updated_at'] - df['created_at']
     print("\nInsertando datos de la tabla...")
 
     try:
         with conn.cursor() as cursor:
             for _, row in df.iterrows():
-                insert_query = sql.SQL('''
-                    INSERT INTO datos (id, name, html_url, created_at, updated_at)
-                    VALUES ({}, {}, {})
-                ''').format(
+              if existe_dato(row['id']) < 1:
+                 insert_query = sql.SQL('''
+                    INSERT INTO {}.{} (id, project_name, url, created, updated, dias_update)
+                    VALUES ({}, {}, {}, {}, {}, {})
+                 ''').format(
+                    sql.Identifier(schema_name),
+                    sql.Identifier(table_name),
                     sql.Literal(row['id']),
                     sql.Literal(row['name']),
                     sql.Literal(row['html_url']),
                     sql.Literal(row['created_at']),
-                    sql.Literal(row['updated_at'])
-                )
-                cursor.execute(insert_query)
-            conn.commit()
-            print("Los datos se han insertado correctamente en la tabla.")
+                    sql.Literal(row['updated_at']),
+                    sql.Literal(row['dias_update'])
+                 )
+                 cursor.execute(insert_query)
+                 conn.commit()
+            print("\nLos datos se han insertado correctamente en la tabla.\n")
     except (Exception, psycopg2.DatabaseError) as error:
         print("Error al insertar los datos en la tabla:", error)
 
